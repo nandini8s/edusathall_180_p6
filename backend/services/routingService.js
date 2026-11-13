@@ -1,0 +1,21 @@
+const { ROUTES_BY_PREFIX, MEDICAL_ROUTE } = require("../config/routingConfig");
+
+function routeAnomaly(stationCode, category, routeConfig = ROUTES_BY_PREFIX, medicalRoute = MEDICAL_ROUTE) {
+  const handlerKey = category === "Medical" ? "MEDICAL" : stationCode.slice(3, 5);
+  const route = category === "Medical" ? medicalRoute : routeConfig[handlerKey];
+
+  if (!route) {
+    const error = new Error(`No control-room route is configured for station prefix ${stationCode.slice(3, 5)}.`);
+    error.statusCode = 422;
+    error.code = "UNKNOWN_STATION_ROUTE";
+    throw error;
+  }
+
+  return {
+    corridor: route.corridor,
+    destination: route.destination,
+    handlerKey,
+  };
+}
+
+module.exports = { routeAnomaly };
