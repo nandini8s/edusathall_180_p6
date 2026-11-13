@@ -47,13 +47,10 @@ Run the automated suite from `backend/` with `npm test`. The numbered AUD cases 
 | AUD-39 | Update handler availability and max capacity | Settings change without altering active report IDs |
 | AUD-40 | Lower capacity below current active workload | Reject update with 409; handler record remains unchanged |
 | AUD-41 | Move Pending report to Assigned with available capacity | Reserve handler slot and update report assignment |
-| AUD-42 | Move Pending report to Assigned with unavailable handler | Return `HANDLER_UNAVAILABLE`; report and workload stay unchanged |
+| AUD-42 | Move Pending report to Assigned with no eligible handler | Return `HANDLER_UNAVAILABLE`; report remains Pending and is escalated |
 
-## Audited features without an executable contract
+## Backup and escalation coverage
 
-| Feature | Current finding | Verification result |
-| --- | --- | --- |
-| Backup assignment | No backup route, field, or API found. | Not implemented; cannot test assignment behavior until a contract exists. |
-| Escalation | No escalation condition, action, history, or API found. | Not implemented; cannot test escalation behavior until a contract exists. |
+`tests/assignmentEscalation.test.js` covers primary available, primary unavailable/full with backup assignment, both unavailable/full, backup capacity reservation, medical backup bypass, history, successful retry, concurrent retry serialization, and finite automatic retry limit. `tests/handlerMongo.integration.test.js` exercises primary workload, backup assignment, escalation, automatic retry after availability change, duplicate retry, and capacity release against the configured replica set.
 
-The live integration test verifies MongoDB transaction behavior on the configured deployment. Backup and escalation require separate product rules and remain out of scope.
+The live integration test must run with `npm run test:integration` against the configured MongoDB replica set. It creates uniquely tagged temporary reports and restores tested handler settings. It requires idle AB primary and backup demonstration handlers.

@@ -27,9 +27,28 @@ function callCreate(body) {
 }
 
 async function withMockHandlers(seed, callback) {
+  const originalFindOne = Handler.findOne;
+  const originalFindById = Handler.findById;
   const originalFindOneAndUpdate = Handler.findOneAndUpdate;
   const originalExists = Handler.exists;
-  const records = new Map(seed.map((handler) => [handler.key, { _id: handler.key, activeReportIds: [], ...handler }]));
+  const records = new Map(seed.map((handler) => [handler.key, {
+    _id: handler.key,
+    activeReportIds: [],
+    role: handler.key.endsWith("_BACKUP") ? "backup" : "primary",
+    primaryHandlerKey: handler.key.split("_")[0],
+    corridor: handler.key.startsWith("AB") ? "East Control Room" : handler.key === "MEDICAL" ? "Central Control Room" : "West Control Room",
+    destination: handler.key === "MEDICAL" ? "Central Emergency Line" : handler.key,
+    eligibleCategories: handler.key === "MEDICAL" ? ["Medical"] : ["Safety", "Technical", "Crowd", "Cleanliness"],
+    ...handler,
+  }]));
+  const find = (filter) => [...records.values()].find((handler) => {
+    if (filter.key && handler.key !== filter.key) return false;
+    if (filter._id && handler._id !== filter._id) return false;
+    if (filter.activeReportIds && !handler.activeReportIds.some((id) => String(id) === String(filter.activeReportIds))) return false;
+    return true;
+  }) || null;
+  Handler.findOne = (filter) => ({ session: async () => find(filter) });
+  Handler.findById = (id) => ({ session: async () => [...records.values()].find((handler) => String(handler._id) === String(id)) || null });
   Handler.findOneAndUpdate = async (filter, update) => {
     const handler = filter.key ? records.get(filter.key) : [...records.values()].find((entry) => entry._id === filter._id);
     if (!handler) return null;
@@ -47,6 +66,8 @@ async function withMockHandlers(seed, callback) {
   Handler.exists = async ({ key }) => records.has(key);
   try { return await callback(records); }
   finally {
+    Handler.findOne = originalFindOne;
+    Handler.findById = originalFindById;
     Handler.findOneAndUpdate = originalFindOneAndUpdate;
     Handler.exists = originalExists;
   }
@@ -56,9 +77,11 @@ async function withMockStatusUpdate(report, status) {
   const { updateStatus } = require("../controllers/anomalyController");
   const originalStartSession = mongoose.startSession;
   const originalFindById = Anomaly.findById;
+  const originalFind = Anomaly.find;
   const session = { withTransaction: async (work) => work(), endSession: async () => {} };
   mongoose.startSession = async () => session;
   Anomaly.findById = () => ({ session: async () => report });
+  Anomaly.find = () => ({ sort() { return this; }, select() { return this; }, lean() { return this; }, cursor() { return (async function* emptyCursor() {})(); } });
   report.save = async () => report;
   const result = { statusCode: 200, body: null, error: null };
   const res = {
@@ -75,6 +98,7 @@ async function withMockStatusUpdate(report, status) {
   } finally {
     mongoose.startSession = originalStartSession;
     Anomaly.findById = originalFindById;
+    Anomaly.find = originalFind;
   }
 }
 
@@ -314,7 +338,7 @@ test("AUD-40 handler maximum cannot be reduced below active workload", async () 
 
 test("AUD-41 Pending report reserves a handler atomically when moved to Assigned", async () => {
   await withMockHandlers([{ key: "AB", available: true, maxCapacity: 1 }], async (records) => {
-    const report = { _id: "pending-1", stationCode: "STAAB123", category: "Safety", status: "Pending", handlerKey: "AB" };
+    const report = { _id: "pending-1", stationCode: "STAAB123", category: "Safety", status: "Pending", handlerKey: "AB", assignmentHistory: [] };
     const response = await withMockStatusUpdate(report, "Assigned");
     assert.equal(response.error, null);
     assert.equal(response.body.data.status, "Assigned");
@@ -325,9 +349,9 @@ test("AUD-41 Pending report reserves a handler atomically when moved to Assigned
 
 test("AUD-42 failed status assignment leaves Pending report and handler workload unchanged", async () => {
   await withMockHandlers([{ key: "AB", available: false, maxCapacity: 1 }], async (records) => {
-    const report = { _id: "pending-2", stationCode: "STAAB123", category: "Safety", status: "Pending", handlerKey: "AB" };
+    const report = { _id: "pending-2", stationCode: "STAAB123", category: "Safety", status: "Pending", handlerKey: "AB", assignmentHistory: [] };
     const response = await withMockStatusUpdate(report, "Assigned");
-    assert.equal(response.error.code, "HANDLER_UNAVAILABLE");
+    assert.equal(response.body.error.code, "HANDLER_UNAVAILABLE");
     assert.equal(report.status, "Pending");
     assert.deepEqual(records.get("AB").activeReportIds, []);
   });

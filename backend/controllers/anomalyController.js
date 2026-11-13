@@ -4,7 +4,8 @@ const { validateStationCode, validateAnomalyCode } = require("../services/valida
 const { classifyAnomaly } = require("../services/classificationService");
 const { routeAnomaly } = require("../services/routingService");
 const { canTransition } = require("../services/statusService");
-const { reserveHandlerCapacity, releaseHandlerCapacity, httpError } = require("../services/handlerService");
+const { releaseHandlerCapacity, httpError } = require("../services/handlerService");
+const { attemptAssignment, retryEscalatedForHandler } = require("../services/assignmentService");
 const { CATEGORIES } = require("../config/anomalyConfig");
 
 const STATUSES = ["Pending", "Assigned", "In Progress", "Resolved"];
@@ -37,16 +38,13 @@ async function createAnomaly(req, res, next) {
           priority,
           description: description.trim(),
           ...routing,
+          primaryHandlerKey: routing.handlerKey,
           status: "Pending",
           isValid: true,
           validationResult,
         }], { session });
-        const handler = await reserveHandlerCapacity(routing.handlerKey, created._id, session);
-        if (handler) {
-          created.status = "Assigned";
-          created.handlerId = handler._id;
-          await created.save({ session });
-        }
+        await attemptAssignment(created, session);
+        await created.save({ session });
         report = created;
       });
       return res.status(201).json({ success: true, data: report });
@@ -98,6 +96,8 @@ async function updateStatus(req, res, next) {
     if (!STATUSES.includes(status)) return res.status(422).json({ success: false, error: { code: "INVALID_STATUS", message: `Status must be one of: ${STATUSES.join(", ")}.` } });
     const session = await mongoose.startSession();
     let updatedReport;
+    let assignmentError;
+    let releasedHandlerKey;
     try {
       await session.withTransaction(async () => {
         const report = await Anomaly.findById(req.params.id).session(session);
@@ -107,19 +107,18 @@ async function updateStatus(req, res, next) {
         }
 
         if (status === "Assigned") {
-          if (report.handlerId) {
-            throw httpError(409, "HANDLER_ALREADY_ASSIGNED", "The Pending report already has a handler link; no additional capacity was reserved.");
+          const assignment = await attemptAssignment(report, session, { isRetry: true });
+          await report.save({ session });
+          if (!assignment.assigned) {
+            assignmentError = httpError(409, "HANDLER_UNAVAILABLE", "No eligible handler is available; the report remains Pending and has been placed in the escalation queue.");
+            return;
           }
-          const handlerKey = report.handlerKey || routeAnomaly(report.stationCode, report.category).handlerKey;
-          const handler = await reserveHandlerCapacity(handlerKey, report._id, session);
-          if (!handler) {
-            throw httpError(409, "HANDLER_UNAVAILABLE", "The handler is unavailable or at capacity; the report remains Pending.");
-          }
-          report.handlerKey = handlerKey;
-          report.handlerId = handler._id;
+          updatedReport = report;
+          return;
         }
 
         if (status === "Resolved" && report.handlerId) {
+          releasedHandlerKey = report.handlerKey;
           const released = await releaseHandlerCapacity(report.handlerId, report._id, session);
           if (!released) {
             throw httpError(409, "HANDLER_ASSIGNMENT_MISSING", "The assigned handler does not contain this active report; the status remains unchanged.");
@@ -130,6 +129,11 @@ async function updateStatus(req, res, next) {
         await report.save({ session });
         updatedReport = report;
       });
+      if (assignmentError) return res.status(assignmentError.statusCode).json({ success: false, error: { code: assignmentError.code, message: assignmentError.message } });
+      if (releasedHandlerKey) {
+        try { await retryEscalatedForHandler(releasedHandlerKey); }
+        catch (error) { console.error("Automatic escalation retry after resolution failed:", error.message); }
+      }
       return res.json({ success: true, data: updatedReport });
     } finally {
       await session.endSession();

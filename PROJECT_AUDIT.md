@@ -20,19 +20,20 @@ The root `README.md` contains only the repository title, so it does not define a
 
 | Area | Finding |
 | --- | --- |
-| Handler management UI | The React routing screen reads handler workload and controls availability/max capacity through the API. It does not change the configured destinations or eligibility rules. |
-| Routing management UI | It uses the configured demonstration handlers and report API. It does not add route mappings, backups, or escalation controls. |
+| Handler management UI | The React routing screen reads handler role/workload and controls availability/max capacity through the API. It does not change configured destinations or eligibility rules. |
 | User dashboard | The list endpoint is global and has no identity or user filter, so this is a global report tracker rather than a per-user view. |
-| Error and integration coverage | Unit tests cover handler reservation and status flows with a fake model/session. A live MongoDB replica-set integration test is still needed to exercise database transaction behavior end-to-end. |
+| Error and integration coverage | Unit tests cover reservation, primary/backup selection, escalation and retries. Live MongoDB transaction coverage is available through the opt-in replica-set integration test. |
 
 ## Missing
 
 | Area | Finding |
 | --- | --- |
-| Backup assignment | No backup destination configuration, selection algorithm, persistence field, or API exists. |
-| Escalation | No escalation rules, timer/trigger, escalation destination, audit history, or API exists. |
 | Agency-specific codebook | The five mappings are explicitly demonstrative and require approved agency codes before operational use. |
+
+## Recently implemented
+
+Non-medical routes now have configurable, clearly labelled demonstration backup mappings. Assignment tries eligible primary then same-corridor backup handlers, tracks primary/backup role and assignment attempt history, and persists unavailable/full reports in a Pending escalation queue. Operators can list and retry escalations; handler availability/capacity changes and capacity releases trigger bounded automatic retries (maximum eight). Medical remains Critical and bypasses ordinary backups. Routing Management shows primary/backup roles and the escalation queue.
 
 ## Scope and implementation note
 
-Handler reservation and status transitions require a MongoDB deployment that supports transactions (replica set or sharded cluster). Existing demonstration route configuration provides the handler defaults; no official handler mapping, backup assignment, or escalation behavior was invented.
+Handler reservation, escalation retry and status transitions require a MongoDB deployment that supports transactions (replica set or sharded cluster). No official operational mappings were invented; backup mapping values are configurable demonstrations.
