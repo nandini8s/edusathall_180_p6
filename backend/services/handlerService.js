@@ -82,7 +82,7 @@ async function reserveHandlerCapacity(key, reportId, session) {
       },
     },
     { $addToSet: { activeReportIds: reportId } },
-    { new: true, session },
+    { returnDocument: "after", session },
   );
 }
 
@@ -90,7 +90,7 @@ async function releaseHandlerCapacity(handlerId, reportId, session) {
   return Handler.findOneAndUpdate(
     { _id: handlerId, activeReportIds: reportId },
     { $pull: { activeReportIds: reportId } },
-    { new: true, session },
+    { returnDocument: "after", session },
   );
 }
 
@@ -131,7 +131,7 @@ async function updateHandler(key, changes) {
       ],
     };
   }
-  const handler = await Handler.findOneAndUpdate(filter, { $set: update }, { new: true, runValidators: true });
+  const handler = await Handler.findOneAndUpdate(filter, { $set: update }, { returnDocument: "after", runValidators: true });
   if (handler) return handlerData(handler);
 
   const exists = await Handler.exists({ key });
