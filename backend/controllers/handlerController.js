@@ -1,4 +1,5 @@
 const { listHandlers, updateHandler } = require("../services/handlerService");
+const { retryEscalatedForHandler } = require("../services/assignmentService");
 
 async function getHandlers(req, res, next) {
   try {
@@ -18,6 +19,8 @@ async function patchHandler(req, res, next) {
       });
     }
     const data = await updateHandler(req.params.key, body);
+    try { await retryEscalatedForHandler(req.params.key); }
+    catch (error) { console.error("Automatic escalation retry after handler update failed:", error.message); }
     return res.json({ success: true, data });
   } catch (error) { return next(error); }
 }

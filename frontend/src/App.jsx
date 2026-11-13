@@ -21,6 +21,8 @@ function App() {
   const [page, setPage] = useState(location.hash.slice(1) || 'submit')
   const [reports, setReports] = useState([])
   const [handlers, setHandlers] = useState([])
+  const [escalations, setEscalations] = useState([])
+  const [escalationsLoading, setEscalationsLoading] = useState(false)
   const [pagination, setPagination] = useState({ page: 1, pages: 1, total: 0 })
   const [stats, setStats] = useState(null)
   const [apiHealth, setApiHealth] = useState('Checking API…')
@@ -48,6 +50,11 @@ function App() {
     try { const { data } = await api.get('/handlers'); setHandlers(data.data) }
     catch (e) { setError(apiMessage(e)) } finally { setHandlersLoading(false) }
   }, [])
+  const loadEscalations = useCallback(async () => {
+    setEscalationsLoading(true)
+    try { const { data } = await api.get('/anomalies/escalated'); setEscalations(data.data) }
+    catch (e) { setError(apiMessage(e)) } finally { setEscalationsLoading(false) }
+  }, [])
 
   useEffect(() => { const onPopState = () => setPage(window.location.hash.slice(1) || 'submit'); addEventListener('popstate', onPopState); return () => removeEventListener('popstate', onPopState) }, [])
   useEffect(() => { api.get('/health', { validateStatus: () => true }).then(({ data }) => setApiHealth(data.data?.database === 'connected' ? 'API connected' : `Database ${data.data?.database || 'unavailable'}`)).catch(() => setApiHealth('API unavailable')) }, [])
@@ -63,9 +70,9 @@ function App() {
   }, [page, loadStats])
   useEffect(() => {
     if (page !== 'routing') return undefined
-    const timer = setTimeout(() => { void loadHandlers() }, 0)
+    const timer = setTimeout(() => { void loadHandlers(); void loadEscalations() }, 0)
     return () => clearTimeout(timer)
-  }, [page, loadHandlers])
+  }, [page, loadHandlers, loadEscalations])
 
   const updateStatus = async (report) => {
     setError('')
@@ -77,8 +84,14 @@ function App() {
     try {
       const { data } = await api.patch(`/handlers/${key}`, changes)
       setHandlers(current => current.map(handler => handler.key === key ? data.data : handler))
+      await loadEscalations(); await loadReports(pagination.page)
       return true
     } catch (e) { setError(apiMessage(e)); return false }
+  }
+  const retryEscalation = async (id) => {
+    setError('')
+    try { await api.post(`/anomalies/escalated/${id}/retry`); await Promise.all([loadEscalations(), loadReports(pagination.page), loadHandlers()]); return true }
+    catch (e) { setError(apiMessage(e)); await loadEscalations(); return false }
   }
   const handleCreated = () => { loadReports(1); loadStats() }
 
@@ -96,7 +109,7 @@ function App() {
         {page === 'submit' && <Submission onCreated={handleCreated} onView={() => navigate('user')} />}
         {page === 'user' && <ReportList title="User dashboard" eyebrow="REPORT TRACKER" intro="Follow submitted reports and their latest response status." reports={reports} loading={loading} pagination={pagination} reload={loadReports} statuses={false} onUpdate={updateStatus} filter={filter} setFilter={setFilter} />}
         {page === 'handler' && <ReportList title="Handler dashboard" eyebrow="RESPONSE QUEUE" intro="Review assigned work and move reports through the response workflow." reports={reports.filter(r => r.status !== 'Resolved')} loading={loading} pagination={pagination} reload={loadReports} statuses onUpdate={updateStatus} filter={filter} setFilter={setFilter} />}
-        {page === 'routing' && <Routing reports={reports} loading={loading} handlers={handlers} handlersLoading={handlersLoading} pagination={pagination} reload={loadReports} reloadHandlers={loadHandlers} updateHandler={updateHandler} statuses onUpdate={updateStatus} filter={filter} setFilter={setFilter} />}
+        {page === 'routing' && <Routing reports={reports} loading={loading} handlers={handlers} handlersLoading={handlersLoading} escalations={escalations} escalationsLoading={escalationsLoading} retryEscalation={retryEscalation} pagination={pagination} reload={loadReports} reloadHandlers={loadHandlers} reloadEscalations={loadEscalations} updateHandler={updateHandler} statuses onUpdate={updateStatus} filter={filter} setFilter={setFilter} />}
         {page === 'analytics' && <Analytics stats={stats} reports={reports} loading={loading} />}
       </div>
     </main>
@@ -139,13 +152,15 @@ function ReportList({ title, eyebrow, intro, reports, loading, pagination, reloa
 
 function FilterBar({ filter, setFilter }) { return <div className="filterbar"><span>FILTER REPORTS</span>{[['status', statuses], ['category', categories], ['priority', priorities]].map(([key, items]) => <select key={key} value={filter[key]} onChange={e => setFilter(f => ({ ...f, [key]: e.target.value }))}><option value="">All {key}</option>{items.map(i => <option key={i}>{i}</option>)}</select>)}<button className="outline-btn" onClick={() => setFilter({ status: '', category: '', priority: '' })}>Clear</button></div> }
 
-function ReportsTable({ reports, loading, canUpdate, onUpdate }) { return <div className="panel table-panel"><div className="table-title"><div><span className="eyebrow">LIVE FROM DATABASE</span><h2>Recent reports</h2></div><span className="record-count">{reports.length} RECORDS</span></div>{loading ? <div className="empty-state">Loading reports…</div> : reports.length === 0 ? <div className="empty-state">No reports match this view.</div> : <div className="table-wrap"><table><thead><tr><th>REPORT</th><th>STATION / TYPE</th><th>CLASSIFICATION</th><th>ASSIGNED TO</th><th>STATUS</th>{canUpdate && <th>ACTION</th>}</tr></thead><tbody>{reports.map(r => <tr key={r._id}><td><code className="id-code">{r._id}</code><small>{new Date(r.createdAt).toLocaleString()}</small></td><td><b>{r.stationCode}</b><small>{r.anomalyCode} · {r.description}</small></td><td><b>{r.category}</b><small><Priority value={r.priority}/></small></td><td>{r.destination || '—'}<small>{r.corridor}</small></td><td><Status value={r.status}/></td>{canUpdate && <td>{nextStatus[r.status] ? <button className="mini-btn" onClick={() => onUpdate(r)}>Mark {nextStatus[r.status]}</button> : '—'}</td>}</tr>)}</tbody></table></div>}</div> }
+function ReportsTable({ reports, loading, canUpdate, onUpdate }) { return <div className="panel table-panel"><div className="table-title"><div><span className="eyebrow">LIVE FROM DATABASE</span><h2>Recent reports</h2></div><span className="record-count">{reports.length} RECORDS</span></div>{loading ? <div className="empty-state">Loading reports…</div> : reports.length === 0 ? <div className="empty-state">No reports match this view.</div> : <div className="table-wrap"><table><thead><tr><th>REPORT</th><th>STATION / TYPE</th><th>CLASSIFICATION</th><th>ASSIGNED TO</th><th>STATUS</th>{canUpdate && <th>ACTION</th>}</tr></thead><tbody>{reports.map(r => <tr key={r._id}><td><code className="id-code">{r._id}</code><small>{new Date(r.createdAt).toLocaleString()}</small></td><td><b>{r.stationCode}</b><small>{r.anomalyCode} · {r.description}</small></td><td><b>{r.category}</b><small><Priority value={r.priority}/></small></td><td>{r.destination || '—'}<small>{r.corridor}{r.assignmentRole && ` · ${r.assignmentRole} handler`}</small></td><td><Status value={r.status}/></td>{canUpdate && <td>{nextStatus[r.status] ? <button className="mini-btn" onClick={() => onUpdate(r)}>Mark {nextStatus[r.status]}</button> : '—'}</td>}</tr>)}</tbody></table></div>}</div> }
 
 function Status({ value }) { return <span className={`status status-${value.toLowerCase().replaceAll(' ', '-')}`}><i/>{value}</span> }
 function Priority({ value }) { return <span className={`priority priority-${value.toLowerCase()}`}>{value}</span> }
 function Pagination({ pagination, reload }) { return <div className="pagination"><span>{pagination.total || 0} total reports · page {pagination.page || 1} of {Math.max(1, pagination.pages || 1)}</span><div><button disabled={(pagination.page || 1) <= 1} onClick={() => reload(pagination.page - 1)}>← Previous</button><button disabled={(pagination.page || 1) >= (pagination.pages || 1)} onClick={() => reload(pagination.page + 1)}>Next →</button></div></div> }
 
-function Routing({ reports, loading, handlers, handlersLoading, pagination, reload, reloadHandlers, updateHandler, statuses: canUpdate, onUpdate, filter, setFilter }) { return <><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line"/> CONTROL ROOM OPERATIONS</div><h1>Routing management</h1><p className="lede">Manage availability and capacity for configured demonstration handlers.</p></div><button className="outline-btn" onClick={() => { reload(pagination.page); reloadHandlers() }}>↻ Refresh</button></div><div className="route-summary">{handlersLoading ? <div className="panel empty-state">Loading handlers…</div> : handlers.map(handler => <HandlerCard key={handler.key} handler={handler} onUpdate={updateHandler}/>)}</div><FilterBar filter={filter} setFilter={setFilter}/><ReportsTable reports={reports} loading={loading} canUpdate={canUpdate} onUpdate={onUpdate}/><Pagination pagination={pagination} reload={reload}/></> }
+function Routing({ reports, loading, handlers, handlersLoading, escalations, escalationsLoading, retryEscalation, pagination, reload, reloadHandlers, reloadEscalations, updateHandler, statuses: canUpdate, onUpdate, filter, setFilter }) { return <><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line"/> CONTROL ROOM OPERATIONS</div><h1>Routing management</h1><p className="lede">Manage primary and backup demonstration handlers, workload and escalations.</p></div><button className="outline-btn" onClick={() => { reload(pagination.page); reloadHandlers(); reloadEscalations() }}>↻ Refresh</button></div><div className="route-summary">{handlersLoading ? <div className="panel empty-state">Loading handlers…</div> : handlers.map(handler => <HandlerCard key={handler.key} handler={handler} onUpdate={updateHandler}/>)}</div><section className="panel escalation-panel"><div className="table-title"><div><span className="eyebrow">PENDING ASSIGNMENT</span><h2>Escalation queue</h2></div><span className="record-count">{escalations.length} REPORTS</span></div>{escalationsLoading ? <div className="empty-state">Loading escalation queue…</div> : escalations.length === 0 ? <div className="empty-state">No reports are waiting for handler capacity.</div> : <div className="escalation-list">{escalations.map(report => <EscalationItem key={report._id} report={report} onRetry={retryEscalation}/>)}</div>}</section><FilterBar filter={filter} setFilter={setFilter}/><ReportsTable reports={reports} loading={loading} canUpdate={canUpdate} onUpdate={onUpdate}/><Pagination pagination={pagination} reload={reload}/></> }
+
+function EscalationItem({ report, onRetry }) { const [busy, setBusy] = useState(false); return <div className="escalation-item"><div><code>{report._id}</code><b>{report.stationCode} · {report.category} · <Priority value={report.priority}/></b><small>{report.escalationReason || 'No eligible handler available.'}</small><small>Retry attempts: {report.retryAttempts || 0} · Last: {report.lastRetryAt ? new Date(report.lastRetryAt).toLocaleString() : 'never'}{report.lastRetryOutcome ? ` · ${report.lastRetryOutcome}` : ''}</small></div><button className="mini-btn" disabled={busy} onClick={async () => { setBusy(true); await onRetry(report._id); setBusy(false) }}>{busy ? 'Retrying…' : 'Retry assignment'}</button></div> }
 
 function HandlerCard({ handler, onUpdate }) {
   const [capacity, setCapacity] = useState(String(handler.maxCapacity))
@@ -160,7 +175,7 @@ function HandlerCard({ handler, onUpdate }) {
   }
   return <section className="route-card handler-card">
     <div className="route-top"><span className="route-symbol">⌁</span><span className={`route-online ${handler.available ? '' : 'route-offline'}`}><i/>{handler.available ? 'AVAILABLE' : 'UNAVAILABLE'}</span></div>
-    <h3>{handler.destination}</h3><small>CONFIGURED HANDLER · {handler.key}</small>
+    <h3>{handler.destination}</h3><small>CONFIGURED {String(handler.role || 'primary').toUpperCase()} HANDLER · {handler.key}{handler.primaryHandlerKey ? ` · FOR ${handler.primaryHandlerKey}` : ''}</small>
     <div className="workload-row"><span>Active assignments</span><b>{active} / {handler.maxCapacity}</b></div>
     <div className="workload-track"><i style={{ width: `${ratio}%` }}/></div>
     <div className="handler-controls">

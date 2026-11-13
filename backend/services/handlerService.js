@@ -1,13 +1,20 @@
 const mongoose = require("mongoose");
 const Handler = require("../models/Handler");
 const Anomaly = require("../models/Anomaly");
-const { ROUTES_BY_PREFIX, MEDICAL_ROUTE } = require("../config/routingConfig");
-const { routeAnomaly } = require("./routingService");
+const { ROUTES_BY_PREFIX, BACKUP_HANDLERS, MEDICAL_ROUTE, NON_MEDICAL_CATEGORIES } = require("../config/routingConfig");
+const { routeAnomaly, getAssignmentPlan } = require("./routingService");
 
 function configuredHandlers() {
   return [
-    ...Object.entries(ROUTES_BY_PREFIX).map(([key, route]) => ({ key, ...route })),
-    { key: "MEDICAL", ...MEDICAL_ROUTE },
+    ...Object.entries(ROUTES_BY_PREFIX).map(([key, route]) => ({
+      key,
+      role: "primary",
+      primaryHandlerKey: key,
+      eligibleCategories: NON_MEDICAL_CATEGORIES,
+      ...route,
+    })),
+    ...Object.entries(BACKUP_HANDLERS).map(([key, handler]) => ({ key, role: "backup", ...handler })),
+    { key: "MEDICAL", role: "primary", primaryHandlerKey: "MEDICAL", ...MEDICAL_ROUTE },
   ];
 }
 
@@ -19,11 +26,11 @@ function httpError(statusCode, code, message) {
 }
 
 async function ensureConfiguredHandlers() {
-  await Promise.all(configuredHandlers().map(({ key, corridor, destination, available, maxCapacity }) =>
+  await Promise.all(configuredHandlers().map(({ key, role, primaryHandlerKey, corridor, destination, eligibleCategories, available, maxCapacity }) =>
     Handler.updateOne(
       { key },
       {
-        $set: { corridor, destination },
+        $set: { role, primaryHandlerKey, corridor, destination, eligibleCategories },
         $setOnInsert: { key, available, maxCapacity, activeReportIds: [] },
       },
       { upsert: true },
@@ -35,7 +42,11 @@ async function ensureConfiguredHandlers() {
 async function reconcileActiveReports() {
   const activeReports = await Anomaly.find({
     status: { $in: ["Assigned", "In Progress"] },
-    handlerId: { $exists: false },
+    $or: [
+      { handlerId: { $exists: false } },
+      { primaryHandlerKey: { $exists: false } },
+      { assignmentRole: { $exists: false } },
+    ],
   });
   for (const candidate of activeReports) {
     let route;
@@ -48,18 +59,36 @@ async function reconcileActiveReports() {
         const report = await Anomaly.findOne({
           _id: candidate._id,
           status: { $in: ["Assigned", "In Progress"] },
-          handlerId: { $exists: false },
+          $or: [
+            { handlerId: { $exists: false } },
+            { primaryHandlerKey: { $exists: false } },
+            { assignmentRole: { $exists: false } },
+          ],
         }).session(session);
         if (!report) return;
-        const handler = await Handler.findOne({ key: route.handlerKey }).session(session);
+        const plan = getAssignmentPlan(report.stationCode, report.category);
+        const handler = report.handlerId
+          ? await Handler.findById(report.handlerId).session(session)
+          : await Handler.findOne({ key: route.handlerKey }).session(session);
         if (!handler) return;
         await Handler.updateOne(
           { _id: handler._id },
           { $addToSet: { activeReportIds: report._id } },
           { session },
         );
-        report.handlerKey = route.handlerKey;
+        report.primaryHandlerKey = plan.primaryHandlerKey;
+        report.handlerKey = handler.key;
         report.handlerId = handler._id;
+        report.assignmentRole = handler.role || "primary";
+        if (!report.assignmentHistory.length) {
+          report.assignmentHistory.push({
+            handlerKey: handler.key,
+            handlerId: handler._id,
+            role: report.assignmentRole,
+            attemptedAt: report.updatedAt || new Date(),
+            outcome: "assigned",
+          });
+        }
         await report.save({ session });
       });
     } finally {

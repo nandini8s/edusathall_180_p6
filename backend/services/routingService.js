@@ -1,6 +1,6 @@
 const { ROUTES_BY_PREFIX, MEDICAL_ROUTE } = require("../config/routingConfig");
 
-function routeAnomaly(stationCode, category, routeConfig = ROUTES_BY_PREFIX, medicalRoute = MEDICAL_ROUTE) {
+function getAssignmentPlan(stationCode, category, routeConfig = ROUTES_BY_PREFIX, medicalRoute = MEDICAL_ROUTE) {
   const handlerKey = category === "Medical" ? "MEDICAL" : stationCode.slice(3, 5);
   const route = category === "Medical" ? medicalRoute : routeConfig[handlerKey];
 
@@ -12,10 +12,16 @@ function routeAnomaly(stationCode, category, routeConfig = ROUTES_BY_PREFIX, med
   }
 
   return {
+    primaryHandlerKey: handlerKey,
+    backupHandlerKeys: category === "Medical" ? [] : [...(route.backupHandlerKeys || [])],
     corridor: route.corridor,
     destination: route.destination,
-    handlerKey,
   };
 }
 
-module.exports = { routeAnomaly };
+function routeAnomaly(stationCode, category, routeConfig = ROUTES_BY_PREFIX, medicalRoute = MEDICAL_ROUTE) {
+  const { primaryHandlerKey, corridor, destination } = getAssignmentPlan(stationCode, category, routeConfig, medicalRoute);
+  return { corridor, destination, handlerKey: primaryHandlerKey };
+}
+
+module.exports = { routeAnomaly, getAssignmentPlan };

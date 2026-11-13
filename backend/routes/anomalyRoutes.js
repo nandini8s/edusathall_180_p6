@@ -1,7 +1,10 @@
 const express = require("express");
 const controller = require("../controllers/anomalyController");
+const escalationController = require("../controllers/escalationController");
 const router = express.Router();
 router.post("/", controller.createAnomaly);
+router.get("/escalated", escalationController.getEscalatedReports);
+router.post("/escalated/:id/retry", escalationController.retryEscalated);
 router.get("/", controller.listAnomalies);
 router.get("/stats", controller.getStats);
 router.get("/:id", controller.getAnomaly);
