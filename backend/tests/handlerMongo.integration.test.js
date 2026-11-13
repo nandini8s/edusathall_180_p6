@@ -11,7 +11,6 @@ const escalationController = require("../controllers/escalationController");
 const { errorHandler } = require("../middleware/errorMiddleware");
 const { connectDB } = require("../config/db");
 const { ensureConfiguredHandlers, listHandlers, reserveHandlerCapacity, updateHandler: setHandlerRecord } = require("../services/handlerService");
-const { retryEscalatedReport } = require("../services/assignmentService");
 
 async function invoke(controller, req) {
   const result = { statusCode: 200, body: null, error: null };
@@ -29,8 +28,10 @@ test("live MongoDB handler capacity lifecycle", { skip: process.env.RUN_MONGO_IN
   const token = `mongo-capacity-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   let handler;
   let backup;
+  let medicalHandler;
   let originalSettings;
   let backupSettings;
+  let medicalSettings;
   let connected = false;
   try {
     await connectDB();
@@ -40,11 +41,13 @@ test("live MongoDB handler capacity lifecycle", { skip: process.env.RUN_MONGO_IN
     const handlers = await listHandlers();
     handler = handlers.find((candidate) => candidate.key === "AB");
     backup = handlers.find((candidate) => candidate.key === "AB_BACKUP");
-    assert.ok(handler && backup, "Need configured AB primary and demonstration backup handlers.");
+    medicalHandler = handlers.find((candidate) => candidate.key === "MEDICAL");
+    assert.ok(handler && backup && medicalHandler, "Need configured AB primary, demonstration backup, and Medical handlers.");
     assert.equal(handler.activeReportCount, 0, "AB primary must be idle to test safely.");
     assert.equal(backup.activeReportCount, 0, "AB backup must be idle to test safely.");
     originalSettings = { available: handler.available, maxCapacity: handler.maxCapacity };
     backupSettings = { available: backup.available, maxCapacity: backup.maxCapacity };
+    medicalSettings = { available: medicalHandler.available, maxCapacity: medicalHandler.maxCapacity };
 
     const stationCode = "STAAB123";
     const anomalyCode = "A02";
@@ -84,6 +87,17 @@ test("live MongoDB handler capacity lifecycle", { skip: process.env.RUN_MONGO_IN
     assert.equal(await activeCount("AB"), 0, "Unavailable primary must not receive a reservation.");
     assert.equal(await activeCount("AB_BACKUP"), 1, "Backup assignment must reserve workload atomically.");
     await resolveReport(unavailableReport);
+
+    await changeHandler(handler.key, { available: true, maxCapacity: 1 });
+    await changeHandler(backup.key, { available: true, maxCapacity: 1 });
+    const fullPrimaryWinner = await createReport("full-primary-winner");
+    const fullPrimaryFallback = await createReport("full-primary-backup");
+    assert.equal(fullPrimaryWinner.assignmentRole, "primary");
+    assert.equal(fullPrimaryFallback.assignmentRole, "backup", "A full primary should fall back to an available backup.");
+    assert.equal(await activeCount("AB"), 1);
+    assert.equal(await activeCount("AB_BACKUP"), 1, "Backup fallback must reserve its own capacity.");
+    await resolveReport(fullPrimaryFallback);
+    await resolveReport(fullPrimaryWinner);
 
     await changeHandler(handler.key, { available: true, maxCapacity: 1 });
     await changeHandler(backup.key, { available: false, maxCapacity: 1 });
@@ -154,6 +168,22 @@ test("live MongoDB handler capacity lifecycle", { skip: process.env.RUN_MONGO_IN
     assert.equal(await activeCount("AB_BACKUP"), 1, "Concurrent retries must reserve only one backup slot.");
     await resolveReport(concurrentAssigned);
 
+    await changeHandler(backup.key, { available: true, maxCapacity: 1 });
+    await changeHandler(medicalHandler.key, { available: false });
+    const backupCountBeforeMedical = await activeCount("AB_BACKUP");
+    const medicalCountBefore = await activeCount("MEDICAL");
+    const medicalReportResult = await invoke(createAnomaly, {
+      body: { stationCode, anomalyCode: "A01", description: `${token} medical bypass verification` },
+    });
+    assert.equal(medicalReportResult.statusCode, 201, JSON.stringify(medicalReportResult.body));
+    const medicalReport = medicalReportResult.body.data;
+    assert.equal(medicalReport.priority, "Critical");
+    assert.equal(medicalReport.destination, "Central Emergency Line");
+    assert.equal(medicalReport.status, "Pending", "Unavailable Medical handler leaves the report Pending.");
+    assert.equal(medicalReport.escalated, true);
+    assert.equal(await activeCount("AB_BACKUP"), backupCountBeforeMedical, "Medical reports must bypass ordinary backup handlers.");
+    assert.equal(await activeCount("MEDICAL"), medicalCountBefore, "Unavailable Medical handler must not receive a reservation.");
+
   } finally {
     if (connected) {
       const created = await Anomaly.find({ description: new RegExp(`^${token}`) }).select("_id").lean();
@@ -182,6 +212,14 @@ test("live MongoDB handler capacity lifecycle", { skip: process.env.RUN_MONGO_IN
         await Handler.updateOne({ _id: backup._id }, { $set: { available: backupSettings.available, maxCapacity: restoredMaxCapacity } });
         const restored = await Handler.findById(backup._id).lean();
         assert.equal(restored.available, backupSettings.available);
+        assert.equal(restored.maxCapacity, restoredMaxCapacity);
+      }
+      if (medicalHandler && medicalSettings) {
+        const current = await Handler.findById(medicalHandler._id).lean();
+        const restoredMaxCapacity = Math.max(medicalSettings.maxCapacity, current.activeReportIds.length);
+        await Handler.updateOne({ _id: medicalHandler._id }, { $set: { available: medicalSettings.available, maxCapacity: restoredMaxCapacity } });
+        const restored = await Handler.findById(medicalHandler._id).lean();
+        assert.equal(restored.available, medicalSettings.available);
         assert.equal(restored.maxCapacity, restoredMaxCapacity);
       }
       assert.equal(await Anomaly.countDocuments({ description: new RegExp(`^${token}`) }), 0, "Temporary integration reports must be removed.");

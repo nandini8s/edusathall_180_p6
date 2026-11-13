@@ -51,6 +51,25 @@ Run the automated suite from `backend/` with `npm test`. The numbered AUD cases 
 
 ## Backup and escalation coverage
 
-`tests/assignmentEscalation.test.js` covers primary available, primary unavailable/full with backup assignment, both unavailable/full, backup capacity reservation, medical backup bypass, history, successful retry, concurrent retry serialization, and finite automatic retry limit. `tests/handlerMongo.integration.test.js` exercises primary workload, backup assignment, escalation, automatic retry after availability change, duplicate retry, and capacity release against the configured replica set.
+`tests/handlerMongo.integration.test.js` is the live MongoDB replica-set suite. It preserves the original transaction checks and adds backup/escalation coverage:
+
+| Live integration scenario | Expected result |
+| --- | --- |
+| Two reports assigned to an available primary | Both report IDs appear in persisted handler workload |
+| Resolve assigned reports | Capacity is released in the same transaction as status updates |
+| Primary unavailable, backup available | Report is assigned to the same-corridor backup and backup workload increases |
+| Primary at capacity, backup available | Primary retains its current assignment; new report reserves backup capacity |
+| Primary at capacity, backup unavailable | New report remains Pending; retry endpoint returns `HANDLER_UNAVAILABLE` |
+| Duplicate reservation for an assigned report | Conditional reservation fails and workload is unchanged |
+| Resolve capacity winner with an escalated waiter | Released primary slot is automatically reserved by the waiter |
+| Both handlers unavailable | Report remains Pending and is escalated with reason and retry metadata |
+| Escalation queue API | The persisted Pending report is returned by the queue endpoint |
+| Manual retry endpoint | Retry outcome and attempt count are persisted |
+| Handler availability change | Eligible escalated report is automatically assigned |
+| Concurrent manual retries | Exactly one request assigns the report and only one handler reservation exists |
+| Medical handler unavailable while ordinary backup is available | Medical remains Critical, Pending/escalated, and does not reserve ordinary backup capacity |
+| Cleanup | Temporary reports and workload references are removed; primary, backup and Medical availability/capacity settings are restored |
+
+`tests/assignmentEscalation.test.js` additionally covers the primary/backup decision matrix, duplicate assignment handling, history contents, automatic retry limit, and concurrency behavior with controlled handler fixtures. The replica-set integration test is still required for MongoDB transaction guarantees; unit fixtures do not replace it.
 
 The live integration test must run with `npm run test:integration` against the configured MongoDB replica set. It creates uniquely tagged temporary reports and restores tested handler settings. It requires idle AB primary and backup demonstration handlers.
