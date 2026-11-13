@@ -1,6 +1,6 @@
 # Project Verification Test Plan
 
-Run the automated suite from `backend/` with `npm test`. The numbered AUD cases below are in `tests/project-audit.test.js`; they test service/controller logic with a fake handler model and transaction session, without connecting to MongoDB. The pre-existing tests in `tests/validation.test.js` remain in the suite. A deployment-level MongoDB transaction/concurrency integration test still requires a replica-set test database.
+Run the automated suite from `backend/` with `npm test`. The numbered AUD cases below are in `tests/project-audit.test.js`; they test service/controller logic with a fake handler model and transaction session. `npm run test:integration` runs `tests/handlerMongo.integration.test.js` against the configured MongoDB replica set and cleans up its temporary reports/settings. The pre-existing tests in `tests/validation.test.js` remain in the suite.
 
 ## Automated cases
 
@@ -56,4 +56,4 @@ Run the automated suite from `backend/` with `npm test`. The numbered AUD cases 
 | Backup assignment | No backup route, field, or API found. | Not implemented; cannot test assignment behavior until a contract exists. |
 | Escalation | No escalation condition, action, history, or API found. | Not implemented; cannot test escalation behavior until a contract exists. |
 
-The suite verifies reservation logic with a fake handler model, including concurrent calls, but does not claim to prove MongoDB's transaction implementation against a live replica set. Backup and escalation require separate product rules and remain out of scope.
+The live integration test verifies MongoDB transaction behavior on the configured deployment. Backup and escalation require separate product rules and remain out of scope.
